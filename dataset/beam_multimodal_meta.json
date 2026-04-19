@@ -1,0 +1,64 @@
+{
+  "rows": 145,
+  "image_shape": [
+    224,
+    224,
+    3
+  ],
+  "numeric_columns": [
+    "beam_width",
+    "beam_depth",
+    "wa_content"
+  ],
+  "target_columns": [
+    "target_load_capacity_kn",
+    "target_max_deflection_mm"
+  ],
+  "split_strategy": "leave-one-group-out",
+  "split_counts": {
+    "fold_0": 17,
+    "fold_1": 14,
+    "fold_2": 9,
+    "fold_3": 13,
+    "fold_4": 12,
+    "fold_5": 10,
+    "fold_6": 12,
+    "fold_7": 10,
+    "fold_8": 10,
+    "fold_9": 14,
+    "fold_10": 15,
+    "fold_11": 9
+  },
+  "split_group_counts": {
+    "fold_0": 1,
+    "fold_1": 1,
+    "fold_2": 1,
+    "fold_3": 1,
+    "fold_4": 1,
+    "fold_5": 1,
+    "fold_6": 1,
+    "fold_7": 1,
+    "fold_8": 1,
+    "fold_9": 1,
+    "fold_10": 1,
+    "fold_11": 1
+  },
+  "seed": 42,
+  "val_ratio": 0.15,
+  "test_ratio": 0.15,
+  "num_folds": 12,
+  "fold_to_group": {
+    "fold_0": "CS-0-100",
+    "fold_1": "CS-0-200",
+    "fold_2": "CS-0-300",
+    "fold_3": "CS-10-100",
+    "fold_4": "CS-10-200",
+    "fold_5": "CS-10-300",
+    "fold_6": "CS-15-100",
+    "fold_7": "CS-15-200",
+    "fold_8": "CS-15-300",
+    "fold_9": "CS-5-100",
+    "fold_10": "CS-5-200",
+    "fold_11": "CS-5-300"
+  }
+}
