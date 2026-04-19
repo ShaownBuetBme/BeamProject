@@ -1,0 +1,13 @@
+experiment_name: baseline_rf_numeric
+
+dataset_path: data_pipeline/artifacts/beam_multimodal.npz
+output_dir: runs
+
+model_name: random_forest
+feature_mode: numeric
+run_mode: cv12
+
+test_fold: 0
+random_seed: 42
+alpha: 1.0
+n_estimators: 300
