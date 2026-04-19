@@ -29,14 +29,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float)
     parser.add_argument("--weight-decay", type=float)
     parser.add_argument("--pretrained-backbone", type=str, choices=["true", "false"])
+    parser.add_argument("--augmentation-level", type=str, choices=["none", "light", "strong"])
+    parser.add_argument("--use-cosine-scheduler", type=str, choices=["true", "false"])
+    parser.add_argument("--early-stopping-patience", type=int)
+    parser.add_argument("--early-stopping-min-delta", type=float)
+    parser.add_argument("--loss-weight-load", type=float)
+    parser.add_argument("--loss-weight-deflection", type=float)
 
     return parser.parse_args()
 
 
 def merge_config(base: dict, args: argparse.Namespace) -> dict:
     pretrained = None
+    use_cosine = None
     if args.pretrained_backbone is not None:
         pretrained = args.pretrained_backbone.lower() == "true"
+    if args.use_cosine_scheduler is not None:
+        use_cosine = args.use_cosine_scheduler.lower() == "true"
 
     cli = {
         "experiment_name": args.experiment_name,
@@ -50,6 +59,12 @@ def merge_config(base: dict, args: argparse.Namespace) -> dict:
         "learning_rate": args.learning_rate,
         "weight_decay": args.weight_decay,
         "pretrained_backbone": pretrained,
+        "augmentation_level": args.augmentation_level,
+        "use_cosine_scheduler": use_cosine,
+        "early_stopping_patience": args.early_stopping_patience,
+        "early_stopping_min_delta": args.early_stopping_min_delta,
+        "loss_weight_load": args.loss_weight_load,
+        "loss_weight_deflection": args.loss_weight_deflection,
     }
 
     merged = dict(base)
@@ -75,6 +90,12 @@ def main() -> None:
         "learning_rate",
         "weight_decay",
         "pretrained_backbone",
+        "augmentation_level",
+        "use_cosine_scheduler",
+        "early_stopping_patience",
+        "early_stopping_min_delta",
+        "loss_weight_load",
+        "loss_weight_deflection",
     ]
     missing = [k for k in required if k not in cfg]
     if missing:

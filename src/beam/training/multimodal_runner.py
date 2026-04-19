@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms as T
 
 from beam.data.dataset import get_fold_indices, load_beam_npz
 from beam.data.features import fit_standardizer
@@ -18,16 +19,47 @@ from beam.utils.seed import set_seed
 
 
 class BeamTorchDataset(Dataset):
-    def __init__(self, x_img: np.ndarray, x_num: np.ndarray, y: np.ndarray) -> None:
+    def __init__(
+        self,
+        x_img: np.ndarray,
+        x_num: np.ndarray,
+        y: np.ndarray,
+        is_train: bool,
+        augmentation_level: str,
+    ) -> None:
         self.x_img = torch.from_numpy(np.transpose(x_img, (0, 3, 1, 2))).float()
         self.x_num = torch.from_numpy(x_num).float()
         self.y = torch.from_numpy(y).float()
+        self.is_train = is_train
+
+        if augmentation_level not in {"none", "light", "strong"}:
+            raise ValueError("augmentation_level must be one of: none, light, strong")
+
+        transforms_list: list[nn.Module] = []
+        if is_train and augmentation_level in {"light", "strong"}:
+            transforms_list.extend(
+                [
+                    T.RandomHorizontalFlip(p=0.5),
+                    T.ColorJitter(brightness=0.15, contrast=0.15),
+                ]
+            )
+        if is_train and augmentation_level == "strong":
+            transforms_list.append(T.RandomRotation(degrees=10))
+
+        transforms_list.append(
+            T.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            )
+        )
+        self.image_transform = T.Compose(transforms_list)
 
     def __len__(self) -> int:
         return int(self.y.shape[0])
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self.x_img[idx], self.x_num[idx], self.y[idx]
+        img = self.image_transform(self.x_img[idx])
+        return img, self.x_num[idx], self.y[idx]
 
 
 @dataclass
@@ -43,6 +75,12 @@ class MultimodalTrainConfig:
     learning_rate: float
     weight_decay: float
     pretrained_backbone: bool
+    augmentation_level: str
+    use_cosine_scheduler: bool
+    early_stopping_patience: int
+    early_stopping_min_delta: float
+    loss_weight_load: float
+    loss_weight_deflection: float
 
 
 def _scale_targets(
@@ -62,10 +100,9 @@ def _evaluate(
     device: torch.device,
     y_mean: np.ndarray,
     y_std: np.ndarray,
+    criterion: nn.Module,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     model.eval()
-    criterion = nn.MSELoss()
-
     total_loss = 0.0
     all_pred: list[np.ndarray] = []
     all_true: list[np.ndarray] = []
@@ -99,10 +136,29 @@ def _build_dataloaders(
     val_idx: np.ndarray,
     test_idx: np.ndarray,
     batch_size: int,
+    augmentation_level: str,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
-    train_ds = BeamTorchDataset(x_img[train_idx], x_num[train_idx], y[train_idx])
-    val_ds = BeamTorchDataset(x_img[val_idx], x_num[val_idx], y[val_idx])
-    test_ds = BeamTorchDataset(x_img[test_idx], x_num[test_idx], y[test_idx])
+    train_ds = BeamTorchDataset(
+        x_img[train_idx],
+        x_num[train_idx],
+        y[train_idx],
+        is_train=True,
+        augmentation_level=augmentation_level,
+    )
+    val_ds = BeamTorchDataset(
+        x_img[val_idx],
+        x_num[val_idx],
+        y[val_idx],
+        is_train=False,
+        augmentation_level="none",
+    )
+    test_ds = BeamTorchDataset(
+        x_img[test_idx],
+        x_num[test_idx],
+        y[test_idx],
+        is_train=False,
+        augmentation_level="none",
+    )
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
@@ -153,6 +209,7 @@ def _one_fold(
         val_idx=val_idx,
         test_idx=test_idx,
         batch_size=cfg.batch_size,
+        augmentation_level=cfg.augmentation_level,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -167,7 +224,31 @@ def _one_fold(
         lr=cfg.learning_rate,
         weight_decay=cfg.weight_decay,
     )
-    criterion = nn.MSELoss()
+    loss_weights = torch.tensor(
+        [cfg.loss_weight_load, cfg.loss_weight_deflection],
+        dtype=torch.float32,
+        device=device,
+    ).view(1, -1)
+
+    class WeightedMSELoss(nn.Module):
+        def __init__(self, weights: torch.Tensor) -> None:
+            super().__init__()
+            self.register_buffer("weights", weights)
+
+        def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+            return ((pred - target) ** 2 * self.weights).mean()
+
+    criterion: nn.Module = WeightedMSELoss(weights=loss_weights)
+
+    scheduler = None
+    if cfg.use_cosine_scheduler:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=cfg.epochs,
+        )
+
+    best_val_loss = float("inf")
+    epochs_without_improve = 0
 
     history_rows: list[dict[str, float]] = []
 
@@ -195,15 +276,30 @@ def _one_fold(
             device=device,
             y_mean=y_mean,
             y_std=y_std,
+            criterion=criterion,
         )
+
+        if scheduler is not None:
+            scheduler.step()
+
+        if (best_val_loss - val_loss) > cfg.early_stopping_min_delta:
+            best_val_loss = val_loss
+            epochs_without_improve = 0
+        else:
+            epochs_without_improve += 1
+
         history_rows.append(
             {
                 "fold": fold_idx,
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
                 "val_loss": val_loss,
+                "lr": optimizer.param_groups[0]["lr"],
             }
         )
+
+        if epochs_without_improve >= cfg.early_stopping_patience:
+            break
 
     y_true, y_pred, _ = _evaluate(
         model=model,
@@ -211,6 +307,7 @@ def _one_fold(
         device=device,
         y_mean=y_mean,
         y_std=y_std,
+        criterion=criterion,
     )
 
     fold_metrics = compute_regression_metrics(y_true=y_true, y_pred=y_pred)
@@ -269,6 +366,8 @@ def run_multimodal_training(cfg: MultimodalTrainConfig) -> Path:
     fold_metrics: list[dict[str, float]] = []
     fold_sizes: list[int] = []
     all_predictions: list[dict[str, float]] = []
+    pooled_true: list[np.ndarray] = []
+    pooled_pred: list[np.ndarray] = []
 
     for fold_idx in folds:
         metrics, predictions = _one_fold(
@@ -286,10 +385,23 @@ def run_multimodal_training(cfg: MultimodalTrainConfig) -> Path:
         fold_sizes.append(len(predictions))
         all_predictions.extend(predictions)
 
+        true_rows = [[p["target_0_true"], p["target_1_true"]] for p in predictions]
+        pred_rows = [[p["target_0_pred"], p["target_1_pred"]] for p in predictions]
+        pooled_true.append(
+            np.array(true_rows, dtype=np.float32)
+        )
+        pooled_pred.append(
+            np.array(pred_rows, dtype=np.float32)
+        )
+
     summary = aggregate_fold_metrics(fold_metrics=fold_metrics, fold_sizes=fold_sizes)
+    y_true_all = np.concatenate(pooled_true, axis=0)
+    y_pred_all = np.concatenate(pooled_pred, axis=0)
+    pooled_metrics = compute_regression_metrics(y_true=y_true_all, y_pred=y_pred_all)
     fold_rows = [{k: v for k, v in m.items()} for m in fold_metrics]
 
     write_json(summary, run_dir / "metrics_summary.json")
+    write_json(pooled_metrics, run_dir / "metrics_pooled_global.json")
     write_csv_dicts(fold_rows, run_dir / "fold_metrics.csv")
     write_csv_dicts(all_predictions, run_dir / "all_predictions.csv")
 
