@@ -5,3 +5,4 @@ runs/
 .pytest_cache/
 .ruff_cache/
 data_pipeline/artifacts/*.npz
+colab/.ipynb_checkpoints/

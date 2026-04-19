@@ -1,0 +1,14 @@
+experiment_name: baseline_multimodal_resnet18
+
+dataset_path: data_pipeline/artifacts/beam_multimodal.npz
+output_dir: runs
+
+run_mode: cv12
+test_fold: 0
+random_seed: 42
+
+batch_size: 16
+epochs: 20
+learning_rate: 0.0003
+weight_decay: 0.0001
+pretrained_backbone: true
